@@ -3,6 +3,7 @@ package com.cinemo.app
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,8 +25,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,7 +59,17 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.Transformer
 import androidx.media3.ui.PlayerView
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.ceil
 
 private val Bg = Color(0xFF05070B)
 private val Line = Color(0xFF1D2837)
@@ -83,9 +96,12 @@ fun CinemoApp() {
     var videoUri by rememberSaveable { mutableStateOf<String?>(null) }
     var videoName by rememberSaveable { mutableStateOf("") }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var exportStatus by remember { mutableStateOf<String?>(null) }
+    var durationMs by remember { mutableStateOf(0L) }
+    var startSeconds by rememberSaveable { mutableStateOf(0) }
+    var endSeconds by rememberSaveable { mutableStateOf(0) }
+    var isExporting by remember { mutableStateOf(false) }
 
-    // One ExoPlayer for the whole screen. Media3 uses the phone's own
-    // hardware decoders, so no extra native libraries are needed.
     val exo = remember {
         ExoPlayer.Builder(context)
             .setAudioAttributes(AudioAttributes.DEFAULT, true)
@@ -96,7 +112,16 @@ fun CinemoApp() {
     DisposableEffect(exo) {
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                errorText = "This video can't be played (" + error.errorCodeName + ")."
+                errorText = "Video playback failed: ${error.errorCodeName}"
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && exo.duration > 0) {
+                    durationMs = exo.duration
+                    if (endSeconds == 0) {
+                        endSeconds = ceil(exo.duration / 1000.0).toInt()
+                    }
+                }
             }
         }
         exo.addListener(listener)
@@ -113,13 +138,15 @@ fun CinemoApp() {
         }
     }
 
-    // System photo picker, video only. On phones without the picker,
-    // the androidx contract falls back to the system file chooser.
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
             errorText = null
+            exportStatus = null
+            durationMs = 0L
+            startSeconds = 0
+            endSeconds = 0
             videoName = queryName(context, uri) ?: "Selected video"
             videoUri = uri.toString()
         }
@@ -134,26 +161,31 @@ fun CinemoApp() {
         }
     }
 
+    val maxSeconds = if (durationMs > 0) {
+        ceil(durationMs / 1000.0).toInt()
+    } else 0
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Bg)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier
+                Modifier
                     .size(26.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Brush.linearGradient(listOf(BlueHi, Blue, BlueDeep)))
             )
             Spacer(Modifier.width(10.dp))
             BasicText(
-                text = "CINEMO",
+                "CINEMO",
                 style = TextStyle(
                     color = Fg,
-                    fontSize = 15.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 3.sp
                 )
@@ -171,7 +203,7 @@ fun CinemoApp() {
         ) {
             if (videoUri == null) {
                 BasicText(
-                    text = "No video yet.\nTap Import Video to choose one.",
+                    "No video yet.\nTap Import Video to choose one.",
                     style = TextStyle(
                         color = Muted,
                         fontSize = 14.sp,
@@ -193,49 +225,252 @@ fun CinemoApp() {
 
         if (videoUri != null) {
             BasicText(
-                text = videoName,
-                maxLines = 1,
-                style = TextStyle(color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                videoName,
+                style = TextStyle(
+                    color = Fg,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+
+            BasicText(
+                "TRIM VIDEO",
+                style = TextStyle(
+                    color = BlueHi,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 2.sp
+                )
+            )
+
+            BasicText(
+                "Duration: ${maxSeconds}s",
+                style = TextStyle(color = Muted, fontSize = 12.sp)
+            )
+
+            BasicText(
+                "Start: ${startSeconds}s",
+                style = TextStyle(color = Fg, fontSize = 14.sp)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmallButton("-5s", enabled = startSeconds >= 5) {
+                    startSeconds = (startSeconds - 5).coerceAtLeast(0)
+                }
+                SmallButton("-1s", enabled = startSeconds > 0) {
+                    startSeconds = (startSeconds - 1).coerceAtLeast(0)
+                }
+                SmallButton("+1s", enabled = startSeconds + 1 < endSeconds) {
+                    startSeconds += 1
+                }
+                SmallButton("+5s", enabled = startSeconds + 5 < endSeconds) {
+                    startSeconds += 5
+                }
+            }
+
+            BasicText(
+                "End: ${endSeconds}s",
+                style = TextStyle(color = Fg, fontSize = 14.sp)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmallButton("-5s", enabled = endSeconds - 5 > startSeconds) {
+                    endSeconds -= 5
+                }
+                SmallButton("-1s", enabled = endSeconds - 1 > startSeconds) {
+                    endSeconds -= 1
+                }
+                SmallButton("+1s", enabled = endSeconds < maxSeconds) {
+                    endSeconds = (endSeconds + 1).coerceAtMost(maxSeconds)
+                }
+                SmallButton("+5s", enabled = endSeconds + 5 <= maxSeconds) {
+                    endSeconds = (endSeconds + 5).coerceAtMost(maxSeconds)
+                }
+            }
+
+            BasicText(
+                "Selected clip: ${(endSeconds - startSeconds).coerceAtLeast(0)} seconds",
+                style = TextStyle(color = BlueHi, fontSize = 13.sp)
             )
         }
 
-        val problem = errorText
-        if (problem != null) {
+        if (errorText != null) {
             BasicText(
-                text = problem,
+                errorText!!,
                 style = TextStyle(color = ErrorRed, fontSize = 13.sp)
             )
         }
 
-        Spacer(Modifier.weight(1f))
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp)
-                .clip(RoundedCornerShape(15.dp))
-                .background(Brush.linearGradient(listOf(BlueHi, Blue, BlueDeep)))
-                .clickable(role = Role.Button) {
-                    picker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                    )
-                },
-            contentAlignment = Alignment.Center
-        ) {
+        if (exportStatus != null) {
             BasicText(
-                text = "Import Video",
-                style = TextStyle(
-                    color = Color.White,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.ExtraBold
+                exportStatus!!,
+                style = TextStyle(color = BlueHi, fontSize = 12.sp)
+            )
+        }
+
+        ActionButton(
+            text = if (isExporting) "Exporting..." else "Export Video",
+            enabled = videoUri != null && !isExporting && durationMs > 0
+        ) {
+            val chosen = videoUri
+            if (chosen == null || durationMs <= 0) {
+                exportStatus = "Wait until the video is ready."
+            } else {
+                val startMs = startSeconds * 1000L
+                val endMs = minOf(endSeconds * 1000L, durationMs)
+
+                if (endMs <= startMs) {
+                    exportStatus = "Choose a valid start and end time."
+                } else {
+                    val baseDir = context.getExternalFilesDir(
+                        Environment.DIRECTORY_MOVIES
+                    ) ?: context.cacheDir
+                    val outputDir = File(baseDir, "CINEMO")
+                    outputDir.mkdirs()
+
+                    val stamp = SimpleDateFormat(
+                        "yyyyMMdd_HHmmss", Locale.US
+                    ).format(Date())
+                    val outputFile = File(outputDir, "CINEMO_$stamp.mp4")
+
+                    isExporting = true
+                    exportStatus = "Exporting your clip. Keep CINEMO open..."
+                    errorText = null
+
+                    try {
+                        val clippedItem = MediaItem.Builder()
+                            .setUri(Uri.parse(chosen))
+                            .setClippingConfiguration(
+                                MediaItem.ClippingConfiguration.Builder()
+                                    .setStartPositionMs(startMs)
+                                    .setEndPositionMs(endMs)
+                                    .build()
+                            )
+                            .build()
+
+                        val editedItem = EditedMediaItem.Builder(clippedItem).build()
+
+                        val transformer = Transformer.Builder(context)
+                            .addListener(object : Transformer.Listener {
+                                override fun onCompleted(
+                                    composition: Composition,
+                                    exportResult: ExportResult
+                                ) {
+                                    isExporting = false
+                                    exportStatus =
+                                        "Export complete! Saved to:\n${outputFile.absolutePath}"
+                                }
+
+                                override fun onError(
+                                    composition: Composition,
+                                    exportResult: ExportResult,
+                                    exportException: ExportException
+                                ) {
+                                    isExporting = false
+                                    outputFile.delete()
+                                    exportStatus =
+                                        "Export failed: ${exportException.message ?: "Unknown error"}"
+                                }
+                            })
+                            .build()
+
+                        transformer.start(editedItem, outputFile.absolutePath)
+                    } catch (e: Exception) {
+                        isExporting = false
+                        outputFile.delete()
+                        exportStatus = "Could not start export: ${e.message}"
+                    }
+                }
+            }
+        }
+
+        ActionButton(text = "Import Video") {
+            picker.launch(
+                PickVisualMediaRequest(
+                    ActivityResultContracts.PickVisualMedia.VideoOnly
                 )
             )
         }
 
         BasicText(
-            text = "Milestone 1: pick a video and play it.",
+            "CINEMO Studio • Trim & Export",
             modifier = Modifier.fillMaxWidth(),
-            style = TextStyle(color = Muted, fontSize = 11.sp, textAlign = TextAlign.Center)
+            style = TextStyle(
+                color = Muted,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center
+            )
+        )
+    }
+}
+
+@Composable
+private fun ActionButton(
+    text: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                if (enabled) Brush.linearGradient(
+                    listOf(BlueHi, Blue, BlueDeep)
+                ) else Brush.linearGradient(
+                    listOf(Line, Line)
+                )
+            )
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            text,
+            style = TextStyle(
+                color = if (enabled) Color.White else Muted,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        )
+    }
+}
+
+@Composable
+private fun SmallButton(
+    text: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .width(70.dp)
+            .height(42.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (enabled) Line else Bg)
+            .border(1.dp, Line, RoundedCornerShape(10.dp))
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            text,
+            style = TextStyle(
+                color = if (enabled) Fg else Muted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
         )
     }
 }
