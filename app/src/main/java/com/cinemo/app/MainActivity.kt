@@ -83,6 +83,10 @@ private val ErrorRed = Color(0xFFFF8E9B)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try { File(filesDir, "cinemo-crash.txt").appendText("\nThread: ${thread.name}\n" + android.util.Log.getStackTraceString(error) + "\n") } catch (_: Exception) {}
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
         setContent { CinemoApp() }
     }
 }
