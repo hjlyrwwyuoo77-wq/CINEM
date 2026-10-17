@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.cinemo.studio"
+    namespace = "com.cinemo.app"
     compileSdk = 34
 
     defaultConfig {
