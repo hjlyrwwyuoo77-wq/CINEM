@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.cinemo.app"
+    namespace = "com.cinemo.studio"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.cinemo.app"
+        applicationId = "com.cinemo.studio"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
