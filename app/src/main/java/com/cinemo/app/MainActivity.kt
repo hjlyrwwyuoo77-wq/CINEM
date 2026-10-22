@@ -300,6 +300,24 @@ fun CinemoApp() {
                 "Selected clip: ${(endSeconds - startSeconds).coerceAtLeast(0)} seconds",
                 style = TextStyle(color = BlueHi, fontSize = 13.sp)
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmallButton("Start") {
+                    exo.seekTo(startSeconds * 1000L)
+                }
+                SmallButton("End") {
+                    exo.seekTo(endSeconds * 1000L)
+                }
+                SmallButton("Play") {
+                    exo.play()
+                }
+                SmallButton("Pause") {
+                    exo.pause()
+                }
+            }
         }
 
         if (errorText != null) {
